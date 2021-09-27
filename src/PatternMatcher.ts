@@ -2,138 +2,125 @@ import { MatchHandler } from "./MatchHandler";
 import { TokenMatcher } from "./TokenMatcher";
 import { AnyToken } from "./Tokens";
 
-export default class PatternMatcher {
-    private patternTrees: PatternTreeNode[] = [];
+export default class PatternMatcher
+    implements PatternBuilder, ApplicablePatternMatcher
+{
+    private readonly pattern: PatternNode;
+    private lastNode: PatternNode;
 
-    private PatternBuilderImpl = class PatternBuilderImpl {
-        private node: PatternTreeNode;
+    private constructor(startToken: TokenMatcher) {
+        this.pattern = {
+            tokenMatcher: startToken,
+            next: undefined,
+            handler: undefined,
+        };
 
-        constructor(node: PatternTreeNode) {
-            this.node = node;
-        }
-
-        public followedBy(matcher: TokenMatcher): PatternBuilder {
-            const node = findOrCreateNode(matcher, this.node.next);
-            return new PatternBuilderImpl(node);
-        }
-
-        public then(handler: MatchHandler): void {
-            if (this.node.handler) {
-                throw new Error("Pattern already has a handler.");
-            }
-            this.node.handler = handler;
-        }
-    };
-
-    public when(matcher: TokenMatcher): PatternBuilder {
-        const node = findOrCreateNode(matcher, this.patternTrees);
-        return new this.PatternBuilderImpl(node);
+        this.lastNode = this.pattern;
     }
 
-    private findMatches(tokens: AnyToken[]): MatchInfo[] {
-        if (this.patternTrees.length === 0) {
-            console.warn("No patterns defined.");
-            return [];
+    public static when(matcher: TokenMatcher): PatternBuilder {
+        return new PatternMatcher(matcher);
+    }
+
+    public followedBy(matcher: TokenMatcher): PatternBuilder {
+        if (this.lastNode.handler) {
+            throw new Error("Pattern already has a handler.");
         }
+        this.lastNode.next = {
+            tokenMatcher: matcher,
+            next: undefined,
+            handler: undefined,
+        };
+        this.lastNode = this.lastNode.next;
+        return this;
+    }
 
-        let partialMatches: PartialMatch[] = [];
-        const matches: MatchInfo[] = [];
+    public followedByMultiple(
+        matcher: TokenMatcher,
+        allowNone: boolean,
+        greedy: boolean
+    ): PatternBuilder {
+        throw new Error("Not implemented.");
+    }
 
-        for (let i = 0; i < tokens.length; i++) {
+    public then(handler: MatchHandler): ApplicablePatternMatcher {
+        if (this.lastNode.handler) {
+            throw new Error("Pattern already has a handler.");
+        }
+        this.lastNode.handler = handler;
+        return this;
+    }
+
+    public applyTo(tokens: AnyToken[]): void {
+        const partialMatches: PartialMatch[] = [];
+
+        tokenLoop: for (let i = 0; i < tokens.length; i++) {
             const token = tokens[i];
 
-            // prioritize partial matches
-            partialMatches = partialMatches
-                .filter((pm) => pm.nextNode.tokenMatcher(token))
-                .flatMap((pm) => {
-                    const nextNode = pm.nextNode;
-
-                    if (nextNode.handler) {
-                        // found a match!
-                        matches.push({
-                            startIndex: pm.startIndex,
-                            handler: nextNode.handler,
-                        });
+            for (let j = 0; j < partialMatches.length; j++) {
+                const partialMatch = partialMatches[j];
+                const next = partialMatch.nextNode;
+                if (next.tokenMatcher(token)) {
+                    if (next.handler) {
+                        // match, apply handler
+                        const resetIndex = next.handler(
+                            partialMatch.startIndex,
+                            tokens
+                        );
+                        partialMatches.length = 0;
+                        if (resetIndex) {
+                            i = partialMatch.startIndex - 1;
+                        }
+                        continue tokenLoop;
                     }
-
-                    return nextNode.next.map((n) => ({
-                        startIndex: pm.startIndex,
-                        nextNode: n,
-                    }));
-                });
-
-            // look for new matches
-            for (const node of this.patternTrees) {
-                if (node.tokenMatcher(token)) {
-                    if (node.handler) {
-                        // found a match!
-                        matches.push({
-                            startIndex: i,
-                            handler: node.handler,
-                        });
+                    if (next.next) {
+                        // advance partial match
+                        partialMatch.nextNode = next.next;
                     }
+                    throw new Error("Illegal state");
+                } else {
+                    // remove partial match
+                    partialMatches.splice(j, 1);
+                }
+            }
 
-                    node.next.forEach((n) =>
-                        partialMatches.push({
-                            startIndex: i,
-                            nextNode: n,
-                        })
-                    );
+            if (this.pattern.tokenMatcher(token)) {
+                if (this.pattern.handler) {
+                    // match, apply handler
+                    const resetIndex = this.pattern.handler(i, tokens);
+                    if (resetIndex) {
+                        i--;
+                    }
+                    continue tokenLoop;
+                }
+                if (this.pattern.next) {
+                    // add new partial match
+                    partialMatches.push({
+                        nextNode: this.pattern.next,
+                        startIndex: i,
+                    });
                 }
             }
         }
-
-        return matches;
-    }
-
-    public findAndHandleMatches(tokens: AnyToken[]): void {
-        const matches = this.findMatches(tokens);
-
-        
-        let offset = 0; // TODO
-        for(const match of matches) {
-            offset += match.handler(match.startIndex + offset, tokens);
-        }
     }
 }
 
-function findOrCreateNode(
-    matcher: TokenMatcher,
-    nodes: PatternTreeNode[]
-): PatternTreeNode {
-    let node = nodes.find((node) => node.tokenMatcher === matcher);
-
-    if (node) {
-        return node;
-    }
-
-    node = {
-        tokenMatcher: matcher,
-        next: [],
-    };
-
-    nodes.push(node);
-
-    return node;
-}
-
-type PatternTreeNode = {
+type PatternNode = {
     tokenMatcher: TokenMatcher;
-    next: PatternTreeNode[];
+    next?: PatternNode;
     handler?: MatchHandler;
 };
 
-interface PatternBuilder {
+export interface PatternBuilder {
     followedBy: (matcher: TokenMatcher) => PatternBuilder;
-    then: (handler: MatchHandler) => void;
+    then: (handler: MatchHandler) => ApplicablePatternMatcher;
+}
+
+export interface ApplicablePatternMatcher {
+    applyTo: (tokens: AnyToken[]) => void;
 }
 
 type PartialMatch = {
     startIndex: number;
-    nextNode: PatternTreeNode;
-};
-
-type MatchInfo = {
-    startIndex: number;
-    handler: MatchHandler;
+    nextNode: PatternNode;
 };

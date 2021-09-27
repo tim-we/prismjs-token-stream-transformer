@@ -1,0 +1,21 @@
+import PatternMatcher from "../PatternMatcher";
+import { insertLineBreak } from "../MatchHandler";
+import { ApplicablePatternMatcher } from "../PatternMatcher";
+import {
+    hasLineBreak,
+    isMultiLineComment,
+    isPunctuation,
+    not,
+} from "../TokenMatcher";
+
+export const cssBreakAfterComment = PatternMatcher.when(isMultiLineComment)
+    .followedBy(not(hasLineBreak))
+    .then(insertLineBreak(1));
+
+export const cssBreakAfterBlock = PatternMatcher.when(isPunctuation("}"))
+    .followedBy(not(hasLineBreak))
+    .then(insertLineBreak(1));
+
+export const cssBreakAfterProperty = PatternMatcher.when(isPunctuation(";"))
+    .followedBy(not(hasLineBreak))
+    .then(insertLineBreak(1));
